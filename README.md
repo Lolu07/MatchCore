@@ -161,7 +161,7 @@ matchcore/
 ```bash
 # Configure and build (Release)
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
-cmake --build build -j$(nproc)
+cmake --build build -j$(nproc 2>/dev/null || sysctl -n hw.logicalcpu)
 
 # Run all tests
 ctest --test-dir build --output-on-failure
