@@ -9,6 +9,7 @@ const GLOSSARY: [string, string][] = [
   ["Taker / aggressor", "The incoming order that triggered the trade by crossing the spread."],
   ["Price-time priority", "Best price trades first; at the same price, the earliest order trades first."],
   ["Fill", "One trade between two orders. A large order can fill against several resting orders."],
+  ["Depth", "How many shares wait at each price or better. The depth chart plots it cumulatively."],
   ["Tick", "The smallest price step: $0.01. The engine stores prices as whole ticks, never floating point."],
 ];
 
@@ -66,7 +67,9 @@ export function HowItWorks() {
       </div>
       <p className="footnote">
         This is a shared public demo: everyone trades on the same book, and it resets to the sample orders whenever the
-        server restarts (the free host sleeps when idle).
+        server restarts (the free host sleeps when idle). “Simulate traders” asks the C++ server to submit a burst of
+        random orders around the current price through the same engine API; the speed test runs the benchmark workload
+        against a separate, private engine instance.
       </p>
     </details>
   );

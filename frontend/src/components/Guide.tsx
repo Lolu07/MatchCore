@@ -94,8 +94,8 @@ export function Guide({ book, progress, mine, onPrefill, onSelectCancel }: Props
     {
       key: "cancel",
       title: "Cancel your order",
-      body: "Pick one of your resting orders (marked “yours”) and cancel it — it disappears from the book instantly.",
-      action: latestMine !== null ? { label: `Select #${latestMine}`, run: () => onSelectCancel(latestMine) } : undefined,
+      body: "Find your waiting order in My Orders (it's also marked “yours” in the book) and press Cancel — it disappears from the book instantly.",
+      action: latestMine !== null ? { label: `Show order #${latestMine}`, run: () => onSelectCancel(latestMine) } : undefined,
       unavailable: latestMine === null ? "You have no resting orders yet — do step 1 first." : undefined,
     },
   ];
@@ -115,6 +115,11 @@ export function Guide({ book, progress, mine, onPrefill, onSelectCancel }: Props
         sellers the way real exchanges do: <strong>best price first, then first come, first served</strong>. The book
         started with sample orders so there's something to trade against, and it's shared — other visitors see the
         same book.
+      </p>
+      <p className="lead ways">
+        <span><strong>Follow the 4 steps below</strong>,</span>
+        <span><strong>click any price</strong> in the book to trade at it,</span>
+        <span>or press <strong>Simulate traders</strong> and watch the market move.</span>
       </p>
 
       <ol className="steps">
@@ -136,7 +141,8 @@ export function Guide({ book, progress, mine, onPrefill, onSelectCancel }: Props
       </ol>
       <p className="footnote">
         “Fill in form” only prepares the order — you still press the Buy/Sell button yourself. Hover over any label with a
-        dotted underline for a definition.
+        dotted underline for a definition. Simulated traders can trade against your orders too, so the book may move
+        between steps.
       </p>
     </details>
   );

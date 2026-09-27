@@ -19,6 +19,8 @@
 //   POST   /api/orders              {"side":"buy"|"sell","type":"limit"|"market",
 //                                     "price":<ticks, limit only>,"quantity":<n>}
 //   DELETE /api/orders/<id>
+//   POST   /api/simulate            {"count": n} — a burst of simulated traders' orders
+//   POST   /api/speedtest           benchmark on private engine instances (10 s cooldown)
 //   POST   /api/admin/reset          header X-Reset-Token (only if MATCHCORE_RESET_TOKEN is set)
 //
 // Anything outside /api is served from --static <dir> (the built frontend),
@@ -27,6 +29,7 @@
 #include "HttpServer.hpp"
 #include "Json.hpp"
 #include "MatchingEngine.hpp"
+#include "SpeedTest.hpp"
 #include "StaticFiles.hpp"
 
 #include <atomic>
@@ -38,6 +41,7 @@
 #include <iostream>
 #include <memory>
 #include <mutex>
+#include <random>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -113,15 +117,30 @@ private:
     uint64_t                volume_ = 0;
 };
 
+// Who placed an order: the startup seed, the market simulator, or a visitor.
+enum class Source : uint8_t { Seed, Sim, Visitor };
+
+const char* source_str(Source s) {
+    switch (s) {
+        case Source::Seed: return "seed";
+        case Source::Sim:  return "sim";
+        default:           return "visitor";
+    }
+}
+
+struct OrderInfo { Side side; Source source; };
+
 // Bookkeeping owned by the (single) HTTP thread — never touched by the engine.
 struct ApiStats {
     uint64_t limit_orders      = 0;
     uint64_t market_orders     = 0;
     uint64_t cancels_requested = 0;
     uint64_t cancels_succeeded = 0;
-    // Side of every order submitted through the API, so trades can report the
-    // aggressor side (the engine's Trade struct carries IDs, not sides).
-    std::unordered_map<OrderId, Side> side_of;
+    uint64_t simulated_orders  = 0;
+    // Side and source of every order this server submitted, so trades can
+    // report the aggressor side and who was on each end (the engine's Trade
+    // struct carries IDs only).
+    std::unordered_map<OrderId, OrderInfo> info_of;
 };
 
 const char* side_str(Side s) { return s == Side::Buy ? "buy" : "sell"; }
@@ -168,14 +187,21 @@ std::string book_json(const BookSnapshot& s) {
 }
 
 std::string trade_json(const TradeRecord& r, const ApiStats& stats) {
-    auto it = stats.side_of.find(r.trade.taker_id);
-    std::string aggressor = it == stats.side_of.end() ? "null" : json::quote(side_str(it->second));
+    auto info = [&](OrderId id) -> const OrderInfo* {
+        auto it = stats.info_of.find(id);
+        return it == stats.info_of.end() ? nullptr : &it->second;
+    };
+    const OrderInfo* taker = info(r.trade.taker_id);
+    const OrderInfo* maker = info(r.trade.maker_id);
+    std::string aggressor = taker ? json::quote(side_str(taker->side)) : "null";
     return "{\"seq\":" + std::to_string(r.seq) +
            ",\"price\":" + std::to_string(r.trade.price) +
            ",\"quantity\":" + std::to_string(r.trade.qty) +
            ",\"maker_id\":" + std::to_string(r.trade.maker_id) +
            ",\"taker_id\":" + std::to_string(r.trade.taker_id) +
            ",\"aggressor\":" + aggressor +
+           ",\"maker_source\":" + (maker ? json::quote(source_str(maker->source)) : "null") +
+           ",\"taker_source\":" + (taker ? json::quote(source_str(taker->source)) : "null") +
            ",\"engine_ts_ns\":" + std::to_string(r.trade.ts_ns) +
            ",\"time_ms\":" + std::to_string(r.wall_ms) + "}";
 }
@@ -274,6 +300,8 @@ public:
         if (p == "/api/trades")  return only("GET", req, [&] { return get_trades(req); });
         if (p == "/api/metrics") return only("GET", req, [&] { return get_metrics(); });
         if (p == "/api/orders")  return only("POST", req, [&] { return post_order(req); });
+        if (p == "/api/simulate") return only("POST", req, [&] { return simulate(req); });
+        if (p == "/api/speedtest") return only("POST", req, [&] { return speed_test(); });
 
         const std::string prefix = "/api/orders/";
         if (p.rfind(prefix, 0) == 0)
@@ -292,8 +320,8 @@ private:
         // Plain submissions through the engine's public API, like any client.
         for (const auto& lvl : kSeed) {
             for (Quantity q : lvl.qtys) {
-                engine_->submit_limit(Side::Buy,  kSeedMid - lvl.offset, q);
-                engine_->submit_limit(Side::Sell, kSeedMid + lvl.offset, q);
+                stats_.info_of[engine_->submit_limit(Side::Buy,  kSeedMid - lvl.offset, q)] = {Side::Buy,  Source::Seed};
+                stats_.info_of[engine_->submit_limit(Side::Sell, kSeedMid + lvl.offset, q)] = {Side::Sell, Source::Seed};
                 seeded_ += 2;
             }
         }
@@ -316,6 +344,7 @@ private:
         engine_->stop();
         log_.clear();
         stats_ = {};
+        sim_resting_.clear();
         start_engine();
         return {200, R"({"reset":true})"};
     }
@@ -354,6 +383,7 @@ private:
             ",\"bid_levels\":" + std::to_string(s.bid_levels) +
             ",\"ask_levels\":" + std::to_string(s.ask_levels) +
             ",\"seeded_orders\":" + std::to_string(seeded_) +
+            ",\"simulated_orders\":" + std::to_string(stats_.simulated_orders) +
             ",\"uptime_s\":" + std::to_string((wall_ms() - started_ms_) / 1000) + "}"};
     }
 
@@ -409,7 +439,7 @@ private:
         OrderId id = type == "limit"
             ? engine_->submit_limit(side, *price, static_cast<Quantity>(*qty))
             : engine_->submit_market(side, static_cast<Quantity>(*qty));
-        stats_.side_of[id] = side;
+        stats_.info_of[id] = {side, Source::Visitor};
         (type == "limit" ? stats_.limit_orders : stats_.market_orders)++;
 
         // Barrier: the snapshot is processed after the order, so by the time
@@ -441,6 +471,90 @@ private:
             ",\"book\":" + book_json(snap) + "}"};
     }
 
+    // Simulated traders: a short burst of random orders submitted through the
+    // same engine API a visitor uses. Prices are placed around the current
+    // mid so some rest and some cross; a share of the burst cancels earlier
+    // simulated orders so the book stays bounded.
+    http::Response simulate(const http::Request& req) {
+        int64_t count = 8;
+        if (!req.body.empty()) {
+            auto obj = json::parse_flat_object(req.body);
+            if (!obj) return {400, json::error("body must be {\"count\": n}")};
+            if (auto it = obj->find("count"); it != obj->end()) {
+                auto* v = std::get_if<int64_t>(&it->second);
+                if (!v || *v < 1 || *v > 20) return {400, json::error("count must be an integer in [1, 20]")};
+                count = *v;
+            }
+        }
+
+        BookSnapshot top = engine_->snapshot(1).get();
+        std::optional<Price> bid, ask;
+        if (!top.bids.empty()) bid = top.bids.front().price;
+        if (!top.asks.empty()) ask = top.asks.front().price;
+        Price mid = bid && ask ? (*bid + *ask) / 2 : bid ? *bid + 10 : ask ? *ask - 10 : kSeedMid;
+
+        std::uniform_real_distribution<double> roll(0.0, 1.0);
+        std::uniform_int_distribution<int>     offset_steps(-8, 3);   // ×5 ticks; negative = passive
+        std::uniform_int_distribution<Quantity> limit_qty(5, 60), market_qty(5, 25);
+        // Cancel more when many simulated orders are resting, so the book self-balances.
+        double cancel_p = sim_resting_.size() > 150 ? 0.5 : 0.15;
+
+        uint64_t before = log_.fills();
+        int submitted = 0, cancelled = 0;
+        size_t resting = top.order_count;
+        for (int64_t i = 0; i < count; ++i) {
+            double r = roll(rng_);
+            if (r < cancel_p && !sim_resting_.empty()) {
+                size_t k = std::uniform_int_distribution<size_t>(0, sim_resting_.size() - 1)(rng_);
+                engine_->cancel(sim_resting_[k]);   // no-op if it already traded
+                sim_resting_[k] = sim_resting_.back();
+                sim_resting_.pop_back();
+                ++cancelled;
+                continue;
+            }
+            Side side = roll(rng_) < 0.5 ? Side::Buy : Side::Sell;
+            OrderId id;
+            if (r < cancel_p + 0.2) {
+                id = engine_->submit_market(side, market_qty(rng_));
+            } else {
+                if (resting + 100 >= kMaxRestingOrders) continue;
+                Price off   = offset_steps(rng_) * 5;
+                Price price = std::max<Price>(100, side == Side::Buy ? mid + off : mid - off);
+                id = engine_->submit_limit(side, price, limit_qty(rng_));
+                if (sim_resting_.size() < 500) sim_resting_.push_back(id);
+                ++resting;
+            }
+            stats_.info_of[id] = {side, Source::Sim};
+            ++stats_.simulated_orders;
+            ++submitted;
+        }
+
+        BookSnapshot snap = engine_->snapshot(20).get();   // barrier: burst fully matched
+        return {200,
+            "{\"submitted\":" + std::to_string(submitted) +
+            ",\"cancelled\":" + std::to_string(cancelled) +
+            ",\"trades\":" + std::to_string(log_.fills() - before) +
+            ",\"book\":" + book_json(snap) + "}"};
+    }
+
+    http::Response speed_test() {
+        auto now = std::chrono::steady_clock::now();
+        if (now - last_speed_test_ < std::chrono::seconds(10))
+            return {429, json::error("a speed test ran in the last 10 s — try again shortly")};
+        last_speed_test_ = now;
+
+        constexpr size_t kOps = 100'000;
+        speedtest::Result r = speedtest::run(kOps);
+        return {200,
+            "{\"ops\":" + std::to_string(r.ops) +
+            ",\"engine_ops_per_s\":" + std::to_string(static_cast<uint64_t>(r.engine_ops_per_s)) +
+            ",\"engine_trades\":" + std::to_string(r.engine_trades) +
+            ",\"book_mean_ns\":" + std::to_string(static_cast<uint64_t>(r.book_mean_ns)) +
+            ",\"book_p50_ns\":" + std::to_string(static_cast<uint64_t>(r.book_p50_ns)) +
+            ",\"book_p99_ns\":" + std::to_string(static_cast<uint64_t>(r.book_p99_ns)) +
+            ",\"cpus\":" + std::to_string(r.cpus) + "}"};
+    }
+
     http::Response delete_order(const std::string& raw_id) {
         auto id = parse_u64(raw_id);
         if (!id) return {400, json::error("order id must be a positive integer")};
@@ -464,6 +578,9 @@ private:
     RateLimiter                     limiter_;
     int64_t                         started_ms_;
     uint64_t                        seeded_ = 0;
+    std::vector<OrderId>            sim_resting_;   // simulated limit orders that may still rest
+    std::mt19937_64                 rng_{std::random_device{}()};
+    std::chrono::steady_clock::time_point last_speed_test_{};
 };
 
 std::atomic<bool> g_stop{false};

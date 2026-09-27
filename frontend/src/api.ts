@@ -2,6 +2,7 @@
 // exactly as the engine stores them; see price.ts for display conversion.
 
 export type Side = "buy" | "sell";
+export type Source = "seed" | "sim" | "visitor";
 export type OrderType = "limit" | "market";
 
 export interface RestingOrder {
@@ -35,6 +36,8 @@ export interface Trade {
   maker_id: number;
   taker_id: number;
   aggressor: Side | null;
+  maker_source: Source | null;
+  taker_source: Source | null;
   engine_ts_ns: number;
   time_ms: number;
 }
@@ -52,6 +55,7 @@ export interface Metrics {
   bid_levels: number;
   ask_levels: number;
   seeded_orders: number;
+  simulated_orders: number;
   uptime_s: number;
 }
 
@@ -73,6 +77,23 @@ export interface OrderResult {
   status: string;
   fills: Trade[];
   book: Book;
+}
+
+export interface SimulateResult {
+  submitted: number;
+  cancelled: number;
+  trades: number;
+  book: Book;
+}
+
+export interface SpeedTestResult {
+  ops: number;
+  engine_ops_per_s: number;
+  engine_trades: number;
+  book_mean_ns: number;
+  book_p50_ns: number;
+  book_p99_ns: number;
+  cpus: number;
 }
 
 export interface CancelResult {
@@ -108,4 +129,6 @@ export const api = {
   metrics: () => call<Metrics>("GET", "/metrics"),
   submit: (req: OrderRequest) => call<OrderResult>("POST", "/orders", req),
   cancel: (id: number) => call<CancelResult>("DELETE", `/orders/${id}`),
+  simulate: (count = 8) => call<SimulateResult>("POST", "/simulate", { count }),
+  speedTest: () => call<SpeedTestResult>("POST", "/speedtest"),
 };

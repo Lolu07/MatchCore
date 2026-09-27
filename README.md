@@ -169,6 +169,8 @@ python3 scripts/api_smoke_test.py            # resting orders → cross → fill
 | `GET` | `/api/book` | `?depth=20` (max 100) | best bid/ask, spread, levels with FIFO order queues |
 | `GET` | `/api/trades` | `?limit=50` (max 500) | recent fills, newest first: seq, price, qty, maker/taker id, aggressor side |
 | `GET` | `/api/metrics` | — | orders submitted, fills, volume, resting orders, cancel counts |
+| `POST` | `/api/simulate` | `{"count":8}` (1–20) | a burst of random "simulated trader" orders around the mid, submitted through the same engine API; trades are tagged `sim` |
+| `POST` | `/api/speedtest` | — | runs the benchmark mix (100k ops) on a *private* engine and book, returns measured throughput and p50/p99 latency; 10 s cooldown |
 
 ### Deploying a public demo
 
