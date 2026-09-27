@@ -2,6 +2,8 @@
 
 A high-performance, multithreaded limit order book matching engine in C++20.
 
+**Live demo:** [matchcore.onrender.com](https://matchcore.onrender.com) — submit, cross and cancel orders against the C++ engine in the browser. *(Free hosting: the first load after a quiet period takes ~30 s while the server wakes up.)*
+
 ---
 
 ## What is a matching engine?
