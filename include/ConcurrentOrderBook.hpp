@@ -1,5 +1,6 @@
 #pragma once
 #include "OrderBook.hpp"
+#include <mutex>          // std::unique_lock
 #include <shared_mutex>
 #include <vector>
 
