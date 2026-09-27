@@ -36,4 +36,5 @@ ENV HOST=0.0.0.0 PORT=8080
 EXPOSE 8080
 # --trust-proxy: behind the host's load balancer, the client IP (for rate
 # limiting) arrives in X-Forwarded-For rather than as the TCP peer.
-CMD ["./matchcore_server", "--static", "public", "--trust-proxy"]
+# --seed: visitors land on a two-sided book instead of an empty one.
+CMD ["./matchcore_server", "--static", "public", "--trust-proxy", "--seed"]

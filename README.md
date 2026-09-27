@@ -157,7 +157,7 @@ If the server runs on another port, copy `frontend/.env.example` to `frontend/.e
 End-to-end check against a fresh server (standard-library Python, no packages):
 
 ```bash
-python3 scripts/api_smoke_test.py            # resting orders → cross → fills → cancel
+python3 scripts/api_smoke_test.py            # resting orders → cross → fills → cancel (needs an unseeded server)
 ```
 
 **API** — prices are integer ticks (`100 ticks = $1.00`), the engine's native representation.
@@ -191,7 +191,9 @@ Guards for running on the public internet (they bound resource use; matching is 
 | Reset | `POST /api/admin/reset` with header `X-Reset-Token: $MATCHCORE_RESET_TOKEN` restarts the engine with an empty book; disabled when the variable is unset |
 | Static files | Paths containing `..` are rejected and every resolved file must lie inside the web root |
 
-Server options: `--host`, `--port`, `--static <dir>`, `--trust-proxy` (use `X-Forwarded-For` for the client IP; only set this behind a proxy you trust), plus env `HOST`, `PORT`, `MATCHCORE_RESET_TOKEN`.
+| Seeded book | With `--seed` (set in the Dockerfile), the server submits a fixed 24-order book — 5 levels a side around $100.00, 10 ticks apart — through `submit_limit` at startup and after a reset, so visitors land on a two-sided market |
+
+Server options: `--host`, `--port`, `--static <dir>`, `--trust-proxy`, `--seed` (use `X-Forwarded-For` for the client IP; only set this behind a proxy you trust), plus env `HOST`, `PORT`, `MATCHCORE_RESET_TOKEN`.
 
 The benchmark table in the UI is **static** — the recorded numbers from this README (`frontend/src/data/benchmarks.json`), labelled as such. Nothing in the UI is a live throughput measurement.
 

@@ -86,6 +86,10 @@ export function OrderEntry({ book, cancelId, setCancelId, onEngineUpdate }: Prop
   return (
     <section className="panel">
       <h2>Order Entry</h2>
+      <p className="hint">
+        Try a <strong>buy limit above the best ask</strong> (e.g. 50 @ 100.20) to cross the spread and sweep
+        levels in price-time order. Click any book level to select its front order for cancel.
+      </p>
       <form className="form" onSubmit={submit}>
         <div className="seg" role="group" aria-label="Side">
           <button type="button" className={side === "buy" ? "on buy" : ""} onClick={() => setSide("buy")}>Buy</button>

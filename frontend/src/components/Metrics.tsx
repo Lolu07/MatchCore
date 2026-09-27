@@ -25,7 +25,11 @@ export function Metrics({ metrics }: { metrics: MetricsData | null }) {
   return (
     <section className="panel">
       <h2>Engine Metrics</h2>
-      <p className="footnote">{metrics?.engine ?? "—"}</p>
+      <p className="footnote">
+        {metrics?.engine ?? "—"}
+        {!!metrics?.seeded_orders &&
+          ` · book seeded at startup with ${metrics.seeded_orders} resting orders (submitted through the engine like any client)`}
+      </p>
       <dl className="stats">
         {live.map(([label, v]) => (
           <div key={label}>

@@ -51,6 +51,7 @@ export interface Metrics {
   resting_orders: number;
   bid_levels: number;
   ask_levels: number;
+  seeded_orders: number;
   uptime_s: number;
 }
 

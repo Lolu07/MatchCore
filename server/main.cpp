@@ -238,7 +238,17 @@ private:
 struct Config {
     std::string reset_token;          // empty → /api/admin/reset disabled
     bool        trust_proxy = false;  // take client IP from X-Forwarded-For
+    bool        seed        = false;  // start with a resting book (public demo)
 };
+
+// Deterministic starting book: 5 levels a side, 10 ticks apart around $100.00,
+// several orders per level so FIFO priority is visible. Levels never cross,
+// so seeding produces no trades.
+struct SeedLevel { Price offset; std::vector<Quantity> qtys; };
+const SeedLevel kSeed[] = {
+    {10, {20, 15}}, {20, {25, 20, 10}}, {30, {40, 25}}, {40, {50, 30, 20}}, {50, {80, 40}},
+};
+constexpr Price kSeedMid = 10'000;
 
 // Constant-time comparison so the reset token can't be probed by timing.
 bool token_equals(const std::string& a, const std::string& b) {
@@ -277,6 +287,16 @@ private:
     void start_engine() {
         engine_ = std::make_unique<MatchingEngine>([this](const Trade& t) { log_.record(t); });
         engine_->start();
+        seeded_ = 0;
+        if (!cfg_.seed) return;
+        // Plain submissions through the engine's public API, like any client.
+        for (const auto& lvl : kSeed) {
+            for (Quantity q : lvl.qtys) {
+                engine_->submit_limit(Side::Buy,  kSeedMid - lvl.offset, q);
+                engine_->submit_limit(Side::Sell, kSeedMid + lvl.offset, q);
+                seeded_ += 2;
+            }
+        }
     }
 
     std::string client_of(const http::Request& req) const {
@@ -333,6 +353,7 @@ private:
             ",\"resting_orders\":" + std::to_string(s.order_count) +
             ",\"bid_levels\":" + std::to_string(s.bid_levels) +
             ",\"ask_levels\":" + std::to_string(s.ask_levels) +
+            ",\"seeded_orders\":" + std::to_string(seeded_) +
             ",\"uptime_s\":" + std::to_string((wall_ms() - started_ms_) / 1000) + "}"};
     }
 
@@ -442,6 +463,7 @@ private:
     ApiStats                        stats_;
     RateLimiter                     limiter_;
     int64_t                         started_ms_;
+    uint64_t                        seeded_ = 0;
 };
 
 std::atomic<bool> g_stop{false};
@@ -467,9 +489,11 @@ int main(int argc, char** argv) {
             static_dir = argv[++i];
         } else if (!std::strcmp(argv[i], "--trust-proxy")) {
             cfg.trust_proxy = true;
+        } else if (!std::strcmp(argv[i], "--seed")) {
+            cfg.seed = true;
         } else {
             std::cerr << "usage: " << argv[0]
-                      << " [--host 127.0.0.1] [--port 8080] [--static frontend/dist] [--trust-proxy]\n"
+                      << " [--host 127.0.0.1] [--port 8080] [--static frontend/dist] [--trust-proxy] [--seed]\n"
                          "env: PORT, HOST, MATCHCORE_RESET_TOKEN\n";
             return 2;
         }

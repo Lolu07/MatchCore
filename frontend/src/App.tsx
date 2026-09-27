@@ -49,7 +49,7 @@ export function App() {
       <header className="topbar">
         <h1>MatchCore</h1>
         <span className="sub">C++20 limit order book · price-time priority</span>
-        <a className="sub" href="https://github.com/Lolu07/MatchCore" target="_blank" rel="noreferrer">
+        <a href="https://github.com/Lolu07/MatchCore" target="_blank" rel="noreferrer">
           source on GitHub
         </a>
         <span className={`conn ${online ? "ok" : online === false ? "down" : ""}`}>
