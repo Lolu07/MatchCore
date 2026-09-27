@@ -8,6 +8,27 @@
 
 namespace matchcore {
 
+// Read-only view of the book, for market data / visualisation tooling.
+// Built by value so it can be handed to another thread safely.
+struct RestingOrder {
+    OrderId  id;
+    Quantity leaves;
+};
+
+struct DepthLevel {
+    Price                     price;
+    Quantity                  total_qty;
+    std::vector<RestingOrder> orders;   // FIFO — front is next to match (time priority)
+};
+
+struct BookSnapshot {
+    std::vector<DepthLevel> bids;   // best (highest) first
+    std::vector<DepthLevel> asks;   // best (lowest) first
+    size_t bid_levels  = 0;         // full-book totals, not limited by max_levels
+    size_t ask_levels  = 0;
+    size_t order_count = 0;
+};
+
 // Not thread-safe. Designed to be owned exclusively by the matching thread.
 // Thread safety is the MatchingEngine's responsibility via a request queue.
 class OrderBook {
@@ -22,6 +43,10 @@ public:
     size_t bid_levels()  const { return bids_.size(); }
     size_t ask_levels()  const { return asks_.size(); }
     size_t order_count() const { return index_.size(); }
+
+    // Copies the top `max_levels` price levels of each side. O(levels + orders
+    // in those levels). Read-only: never called on the matching hot path.
+    BookSnapshot snapshot(size_t max_levels) const;
 
 private:
     // Each price level is a FIFO queue of resting orders.

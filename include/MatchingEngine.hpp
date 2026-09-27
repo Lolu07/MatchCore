@@ -5,6 +5,7 @@
 #include <condition_variable>
 #include <deque>
 #include <functional>
+#include <future>
 #include <mutex>
 #include <thread>
 #include <variant>
@@ -41,10 +42,21 @@ public:
     // In a real exchange, you'd send an ack; we omit that here for brevity.
     void cancel(OrderId id);
 
+    // Acknowledged variants for tooling (e.g. the HTTP API server).
+    // These are queued like any other request, so they preserve ordering:
+    // the result reflects every request enqueued before it by the same thread
+    // (read-your-writes), and the book is still only touched by the matching
+    // thread — no lock is ever taken on it. The future is fulfilled by the
+    // matching thread; the engine must be started.
+    std::future<bool>         cancel_with_ack(OrderId id);
+    std::future<BookSnapshot> snapshot(size_t max_levels);
+
 private:
-    struct NewOrder  { Order order; };
-    struct CancelReq { OrderId id;  };
-    using  Request = std::variant<NewOrder, CancelReq>;
+    struct NewOrder    { Order order; };
+    struct CancelReq   { OrderId id;  };
+    struct CancelAck   { OrderId id;  std::promise<bool> result; };
+    struct SnapshotReq { size_t max_levels; std::promise<BookSnapshot> result; };
+    using  Request = std::variant<NewOrder, CancelReq, CancelAck, SnapshotReq>;
 
     void enqueue(Request req);
     void run();

@@ -42,6 +42,20 @@ void MatchingEngine::cancel(OrderId id) {
     enqueue(CancelReq{id});
 }
 
+std::future<bool> MatchingEngine::cancel_with_ack(OrderId id) {
+    std::promise<bool> p;
+    auto f = p.get_future();
+    enqueue(CancelAck{id, std::move(p)});
+    return f;
+}
+
+std::future<BookSnapshot> MatchingEngine::snapshot(size_t max_levels) {
+    std::promise<BookSnapshot> p;
+    auto f = p.get_future();
+    enqueue(SnapshotReq{max_levels, std::move(p)});
+    return f;
+}
+
 void MatchingEngine::enqueue(Request req) {
     {
         std::lock_guard lk(mu_);
@@ -74,8 +88,12 @@ void MatchingEngine::run() {
                     if (handler_) {
                         for (const auto& t : trades) handler_(t);
                     }
-                } else {
+                } else if constexpr (std::is_same_v<T, CancelReq>) {
                     book_.cancel(r.id);
+                } else if constexpr (std::is_same_v<T, CancelAck>) {
+                    r.result.set_value(book_.cancel(r.id));
+                } else {
+                    r.result.set_value(book_.snapshot(r.max_levels));
                 }
             }, req);
         }

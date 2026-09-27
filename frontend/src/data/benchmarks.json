@@ -1,0 +1,17 @@
+{
+  "source": "Recorded run of ./build/phase3_bench 300000 — same numbers as the README and docs/gen_charts.py",
+  "workload": "300k ops/thread · 80% limit / 10% market / 10% cancel · $99.00–$101.00 · qty 1–50",
+  "hardware": "Apple Silicon (ARM64) · Release build",
+  "matching_engine": [
+    { "threads": 1, "ops_per_s": 10311965 },
+    { "threads": 2, "ops_per_s": 10385931 },
+    { "threads": 4, "ops_per_s": 7211507 },
+    { "threads": 8, "ops_per_s": 6556677 }
+  ],
+  "concurrent_order_book": [
+    { "threads": 1, "ops_per_s": 7906874, "p50_ns": 84, "p99_ns": 333 },
+    { "threads": 2, "ops_per_s": 4329282, "p50_ns": 125, "p99_ns": 8900 },
+    { "threads": 4, "ops_per_s": 1639248, "p50_ns": 125, "p99_ns": 51000 },
+    { "threads": 8, "ops_per_s": 829067, "p50_ns": 167, "p99_ns": 155300 }
+  ]
+}

@@ -1,0 +1,8 @@
+.git
+build
+docs
+scripts
+**/node_modules
+frontend/dist
+frontend/.env
+*.md

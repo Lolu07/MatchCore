@@ -1,0 +1,11 @@
+# Render Blueprint: New → Blueprint → select this repo.
+services:
+  - type: web
+    name: matchcore
+    runtime: docker
+    plan: free
+    healthCheckPath: /api/health
+    autoDeploy: true
+    envVars:
+      - key: MATCHCORE_RESET_TOKEN
+        generateValue: true   # enables POST /api/admin/reset; value visible in the dashboard

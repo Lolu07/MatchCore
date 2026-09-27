@@ -130,4 +130,29 @@ std::optional<Price> OrderBook::best_ask() const {
     return asks_.begin()->first;
 }
 
+BookSnapshot OrderBook::snapshot(size_t max_levels) const {
+    BookSnapshot snap;
+    snap.bid_levels  = bids_.size();
+    snap.ask_levels  = asks_.size();
+    snap.order_count = index_.size();
+
+    // Generic lambda: bids_ and asks_ have different comparator types, but
+    // both iterate best-price-first, which is the order a ladder displays.
+    auto copy_side = [max_levels](const auto& side, std::vector<DepthLevel>& out) {
+        for (const auto& [price, lvl] : side) {
+            if (out.size() == max_levels) break;
+            DepthLevel d{price, 0, {}};
+            d.orders.reserve(lvl.size());
+            for (const Order& o : lvl) {
+                d.total_qty += o.leaves;
+                d.orders.push_back({o.id, o.leaves});
+            }
+            out.push_back(std::move(d));
+        }
+    };
+    copy_side(bids_, snap.bids);
+    copy_side(asks_, snap.asks);
+    return snap;
+}
+
 } // namespace matchcore

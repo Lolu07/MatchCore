@@ -19,6 +19,7 @@ This project implements the full matching lifecycle: submission, price-time prio
 - **O(1) order cancellation** — via a stable iterator stored in a hash-map index
 - **Two thread-safety models** — MPSC queue engine or shared-mutex direct access (see Architecture)
 - **~10 million orders/second** throughput on a single matching thread
+- **Interactive order-book terminal** — a thin C++ HTTP server over `MatchingEngine` plus a React UI to submit, cross and cancel orders and watch the book react (see [Interactive simulator](#interactive-simulator))
 
 ---
 
@@ -65,7 +66,7 @@ Two designs are provided, optimised for different use cases:
   Thread N ──┘ best_bid()   ─→  shared_lock  (read)  ─→ OrderBook
 ```
 
-**MatchingEngine** is the higher-throughput option. Multiple producer threads push requests into a mutex-protected deque; a single dedicated matching thread drains the queue using a *batch drain* — it swaps the entire deque out atomically (O(1) while holding the lock) then processes the batch lock-free. The `OrderBook` itself is never locked, because only one thread ever touches it.
+**MatchingEngine** is the higher-throughput option. Multiple producer threads push requests into a mutex-protected deque; a single dedicated matching thread drains the queue using a *batch drain* — it swaps the entire deque out atomically (O(1) while holding the lock) then processes the batch without holding the lock. (The queue itself is mutex-protected, not lock-free.) The `OrderBook` itself is never locked, because only one thread ever touches it.
 
 **ConcurrentOrderBook** wraps `OrderBook` with a `std::shared_mutex`. Write operations (`add_limit`, `add_market`, `cancel`) take an exclusive `unique_lock`; read queries (`best_bid`, `best_ask`) take a `shared_lock`, allowing concurrent reads during write-free intervals. Trades are returned by value and dispatched *after* releasing the lock — if they were dispatched inside the lock, any callback that queried the book would deadlock (non-recursive mutex).
 
@@ -103,6 +104,94 @@ Throughput is nearly flat at 1–2 threads, bounded by the single matching threa
 Throughput falls roughly in half with each doubling of threads — every writer serializes on `unique_lock`. The p99 column tells the more important story: tail latency grows **450× from 1 to 8 threads** while p50 grows only **2×**. This is the *lock-convoy effect*: one thread sweeping a large order across multiple price levels holds the lock while all other threads queue up, then they all re-contend simultaneously when it releases.
 
 `Trades/op` is stable across all configurations (0.763–0.766). Because the workload is pre-generated from a fixed seed, the aggregate match rate is a property of the price distribution and must be concurrency-model-independent. Drift here would indicate a correctness bug (double-fill or lost order).
+
+---
+
+## Interactive simulator
+
+A small web terminal for demonstrating the engine. **All matching still happens in C++** — the browser only sends commands and renders what the engine returns.
+
+```
+ Browser (React + TS, frontend/)
+   │  fetch /api/...            prices as integer ticks; $ ↔ ticks only in the UI
+   ▼
+ Vite dev server  ── proxies /api ──►  matchcore_server  (server/, C++20, POSIX sockets)
+                                        single HTTP thread = one producer
+                                          │ submit_limit / submit_market
+                                          │ cancel_with_ack   → future<bool>
+                                          │ snapshot(depth)   → future<BookSnapshot>
+                                          ▼
+                                  MatchingEngine request queue  (mutex + deque, FIFO)
+                                          ▼
+                                  matching thread ── owns ──► OrderBook
+                                          │ TradeHandler
+                                          ▼
+                                  TradeLog (mutex, bounded) ──► GET /api/trades
+```
+
+**How the adapter stays out of the engine's way**
+
+- Orders go through the existing `submit_limit` / `submit_market`. Two additions were made to `MatchingEngine`, both as new request types on the *same* queue: `cancel_with_ack(id)` (returns whether the cancel hit a resting order) and `snapshot(max_levels)` (a copy of the top of the book). Because they are queued, they observe every earlier request (read-your-writes), and the `OrderBook` is still only ever touched by the matching thread — no lock is added to the book.
+- `OrderBook::snapshot()` is a read-only copy of the top N levels, including each level's FIFO queue of `(order id, leaves)`. It is not on the matching hot path.
+- After a `POST /api/orders`, the server waits on a snapshot future as a barrier: when it resolves, the order has been matched and all its trades delivered, so the response contains that order's fills and the post-trade book.
+- The HTTP server is deliberately single-threaded (one request at a time, `Connection: close`) and binds to `127.0.0.1` by default. It is not part of the performance story — the engine is benchmarked without any network layer.
+
+**Run it** (two terminals):
+
+```bash
+# 1. Engine + API server  (defaults: --host 127.0.0.1 --port 8080)
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j$(nproc 2>/dev/null || sysctl -n hw.logicalcpu)
+./build/matchcore_server
+
+# 2. Frontend  (Node 20+)
+cd frontend
+npm install
+npm run dev            # open http://localhost:5173
+```
+
+If the server runs on another port, copy `frontend/.env.example` to `frontend/.env` and set `MATCHCORE_API`. `npm run build` type-checks and produces a static bundle in `frontend/dist/`; `npm run preview` serves it with the same proxy.
+
+End-to-end check against a fresh server (standard-library Python, no packages):
+
+```bash
+python3 scripts/api_smoke_test.py            # resting orders → cross → fills → cancel
+```
+
+**API** — prices are integer ticks (`100 ticks = $1.00`), the engine's native representation.
+
+| Method | Path | Body / query | Returns |
+|--------|------|--------------|---------|
+| `POST` | `/api/orders` | `{"side":"buy"\|"sell", "type":"limit"\|"market", "price":10050, "quantity":10}` (`price` for limit only) | order id, status, fills, post-trade book |
+| `DELETE` | `/api/orders/<id>` | — | `cancelled: true/false`, book |
+| `GET` | `/api/book` | `?depth=20` (max 100) | best bid/ask, spread, levels with FIFO order queues |
+| `GET` | `/api/trades` | `?limit=50` (max 500) | recent fills, newest first: seq, price, qty, maker/taker id, aggressor side |
+| `GET` | `/api/metrics` | — | orders submitted, fills, volume, resting orders, cancel counts |
+
+### Deploying a public demo
+
+The `Dockerfile` builds the frontend, builds and tests the C++ code, and produces one small image in which `matchcore_server` serves both the UI and `/api` from a single origin (`--static public`).
+
+```bash
+docker build -t matchcore .
+docker run --rm -p 8080:8080 matchcore      # → http://localhost:8080
+```
+
+**Render (free tier):** push to GitHub → Render dashboard → **New → Blueprint** → pick this repo. `render.yaml` configures a Docker web service with a health check on `/api/health`. Render builds on every push and gives a `https://<name>.onrender.com` URL. Free instances sleep when idle, so the first visit after a quiet period takes ~30 s to wake up, and waking starts with an empty book.
+
+Guards for running on the public internet (they bound resource use; matching is unaffected):
+
+| Guard | Behaviour |
+|-------|-----------|
+| Write rate limit | 20-request burst, 5/s sustained per client IP on `POST`/`DELETE` → `429` |
+| Resting-order cap | New limit orders rejected at 2,000 resting orders → `409` (market orders and cancels still work) |
+| Response size | Each level lists at most the first 50 orders of its FIFO queue (`order_count` has the true total) |
+| Reset | `POST /api/admin/reset` with header `X-Reset-Token: $MATCHCORE_RESET_TOKEN` restarts the engine with an empty book; disabled when the variable is unset |
+| Static files | Paths containing `..` are rejected and every resolved file must lie inside the web root |
+
+Server options: `--host`, `--port`, `--static <dir>`, `--trust-proxy` (use `X-Forwarded-For` for the client IP; only set this behind a proxy you trust), plus env `HOST`, `PORT`, `MATCHCORE_RESET_TOKEN`.
+
+The benchmark table in the UI is **static** — the recorded numbers from this README (`frontend/src/data/benchmarks.json`), labelled as such. Nothing in the UI is a live throughput measurement.
 
 ---
 
@@ -144,9 +233,19 @@ matchcore/
 │   ├── MatchingEngine.cpp      — Batch drain, std::visit dispatch
 │   ├── ConcurrentOrderBook.cpp — Thin lock wrappers
 │   └── main.cpp                — Demo: build a book, cross, sweep, cancel
+├── server/
+│   ├── main.cpp                — matchcore_server: HTTP API adapter over MatchingEngine
+│   ├── HttpServer.{hpp,cpp}    — Minimal single-threaded HTTP/1.1 over POSIX sockets
+│   ├── StaticFiles.hpp         — Serves the built UI (single-origin deployment)
+│   └── Json.hpp                — Output escaping + flat request-object parser
+├── frontend/                   — React + TypeScript + Vite order-book terminal
+├── Dockerfile / render.yaml    — One-image deployment (UI + API) and Render blueprint
+├── scripts/
+│   └── api_smoke_test.py       — End-to-end API check (order → cross → cancel)
 ├── test/
 │   ├── unit_test.cpp           — 21 single-threaded correctness tests (62 checks)
-│   └── consistency_test.cpp    — 4 multithreaded invariant tests
+│   ├── consistency_test.cpp    — 4 multithreaded invariant tests
+│   └── engine_query_test.cpp   — Snapshot / acknowledged-cancel API tests
 └── bench/
     ├── bench.cpp               — Quick MatchingEngine throughput sweep
     └── phase3_bench.cpp        — Full throughput + latency comparison
@@ -169,6 +268,7 @@ ctest --test-dir build --output-on-failure
 # Run tests individually
 ./build/unit_test           # single-threaded correctness (62 checks)
 ./build/consistency_test    # multithreaded invariants
+./build/engine_query_test   # snapshot + acknowledged cancel
 
 # Run the demo
 ./build/demo
@@ -186,7 +286,8 @@ ctest --test-dir build --output-on-failure
 - **Language:** C++20 (concepts, `std::variant`, designated initialisers, `if constexpr`)
 - **Concurrency:** `std::thread`, `std::mutex`, `std::shared_mutex`, `std::atomic`
 - **Build:** CMake 3.20+ with CTest integration
-- **Dependencies:** C++ standard library only — no third-party libraries
+- **Dependencies:** C++ standard library only (plus POSIX sockets for the API server) — no third-party libraries
+- **Frontend (optional):** React + TypeScript + Vite, no UI libraries
 
 ---
 

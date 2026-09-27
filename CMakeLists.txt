@@ -26,6 +26,13 @@ target_link_libraries(matchcore PUBLIC Threads::Threads)
 add_executable(demo src/main.cpp)
 target_link_libraries(demo PRIVATE matchcore)
 
+# ── API server (HTTP adapter over MatchingEngine, POSIX sockets) ─────────────
+add_executable(matchcore_server
+    server/main.cpp
+    server/HttpServer.cpp
+)
+target_link_libraries(matchcore_server PRIVATE matchcore)
+
 # ── Tests ──────────────────────────────────────────────────────────────────────
 enable_testing()
 
@@ -36,6 +43,10 @@ add_test(NAME unit_test COMMAND unit_test)
 add_executable(consistency_test test/consistency_test.cpp)
 target_link_libraries(consistency_test PRIVATE matchcore)
 add_test(NAME consistency_test COMMAND consistency_test)
+
+add_executable(engine_query_test test/engine_query_test.cpp)
+target_link_libraries(engine_query_test PRIVATE matchcore)
+add_test(NAME engine_query_test COMMAND engine_query_test)
 
 # ── Benchmarks ─────────────────────────────────────────────────────────────────
 add_executable(bench bench/bench.cpp)
