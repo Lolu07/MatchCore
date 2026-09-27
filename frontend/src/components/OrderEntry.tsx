@@ -1,52 +1,84 @@
-import { useState, type FormEvent } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 import type { Book, CancelResult, OrderResult, OrderType, Side } from "../api";
 import { api } from "../api";
+import { explainCancel, explainOrder, type Explanation } from "../explain";
 import { dollarsToTicks, formatTicks } from "../price";
+import type { OrderTemplate } from "./Guide";
 
 interface Props {
   book: Book | null;
+  mine: Set<number>;
+  prefill: (OrderTemplate & { nonce: number }) | null;
   cancelId: string;
   setCancelId: (id: string) => void;
-  onEngineUpdate: (book: Book) => void;
+  onOrder: (r: OrderResult) => void;
+  onCancel: (r: CancelResult) => void;
 }
 
-const STATUS_TEXT: Record<string, string> = {
-  filled: "Filled",
-  resting: "Resting in book",
-  partially_filled_resting: "Partially filled — remainder resting",
-  partially_filled_remainder_discarded: "Partially filled — market remainder discarded",
-  unfilled_discarded: "No liquidity — market order discarded",
-};
+type Message = { ok: boolean; exp?: Explanation; error?: string };
 
-export function OrderEntry({ book, cancelId, setCancelId, onEngineUpdate }: Props) {
+function Result({ msg }: { msg: Message }) {
+  return (
+    <div className={`result ${msg.ok ? "" : "error"}`} role="status">
+      {msg.exp ? (
+        <>
+          <strong>{msg.exp.headline}</strong>
+          {msg.exp.text && <p>{msg.exp.text}</p>}
+          {msg.exp.fills.length > 0 && (
+            <ul className="fills">
+              {msg.exp.fills.map((f, i) => (
+                <li key={i}>{f}</li>
+              ))}
+            </ul>
+          )}
+        </>
+      ) : (
+        msg.error
+      )}
+    </div>
+  );
+}
+
+export function OrderEntry({ book, mine, prefill, cancelId, setCancelId, onOrder, onCancel }: Props) {
   const scale = book?.price_scale ?? 100;
   const [side, setSide] = useState<Side>("buy");
   const [type, setType] = useState<OrderType>("limit");
   const [price, setPrice] = useState("");
   const [qty, setQty] = useState("");
   const [busy, setBusy] = useState(false);
-  const [orderMsg, setOrderMsg] = useState<{ ok: boolean; result?: OrderResult; text?: string } | null>(null);
-  const [cancelMsg, setCancelMsg] = useState<{ ok: boolean; result?: CancelResult; text?: string } | null>(null);
+  const [orderMsg, setOrderMsg] = useState<Message | null>(null);
+  const [cancelMsg, setCancelMsg] = useState<Message | null>(null);
+
+  // The walkthrough fills the form; the visitor still presses submit.
+  useEffect(() => {
+    if (!prefill) return;
+    setSide(prefill.side);
+    setType(prefill.type);
+    setPrice(prefill.price !== undefined ? formatTicks(prefill.price, scale).replace(/,/g, "") : "");
+    setQty(String(prefill.quantity));
+    setOrderMsg(null);
+    document.getElementById("order-entry")?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  }, [prefill, scale]);
 
   const resting = book
     ? [
         ...book.asks.flatMap((l) => l.orders.map((o) => ({ ...o, side: "sell" as const, price: l.price }))),
         ...book.bids.flatMap((l) => l.orders.map((o) => ({ ...o, side: "buy" as const, price: l.price }))),
-      ].sort((a, b) => a.id - b.id)
+      ].sort((a, b) => Number(mine.has(b.id)) - Number(mine.has(a.id)) || a.id - b.id)
     : [];
 
   async function submit(e: FormEvent) {
     e.preventDefault();
     const quantity = Number(qty);
     if (!/^\d+$/.test(qty.trim()) || quantity <= 0) {
-      setOrderMsg({ ok: false, text: "Quantity must be a positive whole number" });
+      setOrderMsg({ ok: false, error: "Quantity must be a positive whole number of shares." });
       return;
     }
     let ticks: number | undefined;
     if (type === "limit") {
-      const t = dollarsToTicks(price, scale);
+      const t = dollarsToTicks(price.replace(/,/g, ""), scale);
       if (t === null || t <= 0) {
-        setOrderMsg({ ok: false, text: `Price must be a positive amount in ${formatTicks(1, scale)} increments` });
+        setOrderMsg({ ok: false, error: `Enter a price in dollars, in steps of $${formatTicks(1, scale)} (e.g. 100.25).` });
         return;
       }
       ticks = t;
@@ -54,10 +86,10 @@ export function OrderEntry({ book, cancelId, setCancelId, onEngineUpdate }: Prop
     setBusy(true);
     try {
       const result = await api.submit({ side, type, price: ticks, quantity });
-      setOrderMsg({ ok: true, result });
-      onEngineUpdate(result.book);
+      setOrderMsg({ ok: true, exp: explainOrder(result, scale) });
+      onOrder(result);
     } catch (err) {
-      setOrderMsg({ ok: false, text: (err as Error).message });
+      setOrderMsg({ ok: false, error: (err as Error).message });
     } finally {
       setBusy(false);
     }
@@ -66,30 +98,28 @@ export function OrderEntry({ book, cancelId, setCancelId, onEngineUpdate }: Prop
   async function cancel(e: FormEvent) {
     e.preventDefault();
     if (!/^\d+$/.test(cancelId.trim())) {
-      setCancelMsg({ ok: false, text: "Enter a numeric order ID" });
+      setCancelMsg({ ok: false, error: "Enter an order number, or pick one from the list." });
       return;
     }
     setBusy(true);
     try {
       const result = await api.cancel(Number(cancelId));
-      setCancelMsg({ ok: result.cancelled, result });
-      onEngineUpdate(result.book);
+      setCancelMsg({ ok: result.cancelled, exp: explainCancel(result) });
+      onCancel(result);
     } catch (err) {
-      setCancelMsg({ ok: false, text: (err as Error).message });
+      setCancelMsg({ ok: false, error: (err as Error).message });
     } finally {
       setBusy(false);
     }
   }
 
-  const r = orderMsg?.result;
+  const bestOpposite = side === "buy" ? book?.best_ask : book?.best_bid;
 
   return (
-    <section className="panel">
+    <section className="panel" id="order-entry">
       <h2>Order Entry</h2>
-      <p className="hint">
-        Try a <strong>buy limit above the best ask</strong> (e.g. 50 @ 100.20) to cross the spread and sweep
-        levels in price-time order. Click any book level to select its front order for cancel.
-      </p>
+      <p className="panel-desc">Send an order to the C++ engine. The result below explains exactly what the engine did with it.</p>
+
       <form className="form" onSubmit={submit}>
         <div className="seg" role="group" aria-label="Side">
           <button type="button" className={side === "buy" ? "on buy" : ""} onClick={() => setSide("buy")}>Buy</button>
@@ -99,78 +129,67 @@ export function OrderEntry({ book, cancelId, setCancelId, onEngineUpdate }: Prop
           <button type="button" className={type === "limit" ? "on" : ""} onClick={() => setType("limit")}>Limit</button>
           <button type="button" className={type === "market" ? "on" : ""} onClick={() => setType("market")}>Market</button>
         </div>
+        <p className="field-help span">
+          {type === "limit"
+            ? side === "buy"
+              ? "Limit buy: pay at most your price. If no one is selling that cheaply, your order waits in the book."
+              : "Limit sell: receive at least your price. If no one is buying that high, your order waits in the book."
+            : side === "buy"
+              ? "Market buy: buy right now from the cheapest sellers, whatever they ask. Never waits in the book."
+              : "Market sell: sell right now to the highest bidders, whatever they pay. Never waits in the book."}
+        </p>
         <label>
-          Limit price ($)
+          {side === "buy" ? "Highest price you'll pay ($)" : "Lowest price you'll accept ($)"}
           <input
             inputMode="decimal"
             value={type === "market" ? "" : price}
             disabled={type === "market"}
-            placeholder={
-              type === "market"
-                ? "market — sweeps book"
-                : (side === "buy" ? book?.best_ask : book?.best_bid) != null
-                  ? formatTicks((side === "buy" ? book!.best_ask : book!.best_bid)!, scale)
-                  : "100.00"
-            }
+            placeholder={type === "market" ? "not needed for market" : bestOpposite != null ? formatTicks(bestOpposite, scale) : "100.00"}
             onChange={(e) => setPrice(e.target.value)}
           />
         </label>
         <label>
-          Quantity
+          Quantity (shares)
           <input inputMode="numeric" value={qty} placeholder="10" onChange={(e) => setQty(e.target.value)} />
         </label>
+        {type === "limit" && bestOpposite != null && (
+          <p className="field-help span">
+            {side === "buy"
+              ? `Cheapest seller right now: $${formatTicks(bestOpposite, scale)}. At or above this, your buy trades immediately; below it, it waits.`
+              : `Highest buyer right now: $${formatTicks(bestOpposite, scale)}. At or below this, your sell trades immediately; above it, it waits.`}
+          </p>
+        )}
         <button type="submit" className={`primary ${side}`} disabled={busy}>
           {side === "buy" ? "Buy" : "Sell"} {type}
         </button>
       </form>
 
-      {orderMsg && (
-        <div className={`result ${orderMsg.ok ? "" : "error"}`} role="status">
-          {r ? (
-            <>
-              <div>
-                Order <strong>#{r.order_id}</strong> · {STATUS_TEXT[r.status] ?? r.status}
-              </div>
-              <div className="muted">
-                filled {r.filled}/{r.quantity}
-                {r.fills.length > 0 && ` in ${r.fills.length} fill${r.fills.length > 1 ? "s" : ""}: `}
-                {r.fills.map((f) => `${f.quantity} @ ${formatTicks(f.price, scale)} vs #${f.maker_id}`).join(", ")}
-              </div>
-            </>
-          ) : (
-            orderMsg.text
-          )}
-        </div>
-      )}
+      {orderMsg && <Result msg={orderMsg} />}
 
-      <h3>Cancel order</h3>
+      <h3>Cancel an order</h3>
+      <p className="panel-desc">
+        Only orders still waiting in the book can be cancelled. Pick one from the list, or click a price level in the book.
+      </p>
       <form className="form cancel" onSubmit={cancel}>
         <label>
-          Order ID
-          <input inputMode="numeric" value={cancelId} placeholder="#" onChange={(e) => setCancelId(e.target.value)} />
+          Order #
+          <input inputMode="numeric" value={cancelId} placeholder="e.g. 25" onChange={(e) => setCancelId(e.target.value)} />
         </label>
         <label>
-          Resting orders
+          Orders in the book
           <select value={resting.some((o) => String(o.id) === cancelId) ? cancelId : ""} onChange={(e) => setCancelId(e.target.value)}>
             <option value="">{resting.length ? "select…" : "none resting"}</option>
             {resting.map((o) => (
               <option key={o.id} value={o.id}>
                 #{o.id} {o.side.toUpperCase()} {o.leaves} @ {formatTicks(o.price, scale)}
+                {mine.has(o.id) ? "  (yours)" : ""}
               </option>
             ))}
           </select>
         </label>
         <button type="submit" disabled={busy}>Cancel</button>
       </form>
-      {cancelMsg && (
-        <div className={`result ${cancelMsg.ok ? "" : "error"}`} role="status">
-          {cancelMsg.result
-            ? cancelMsg.result.cancelled
-              ? `Order #${cancelMsg.result.order_id} cancelled`
-              : `Order #${cancelMsg.result.order_id} not cancelled — ${cancelMsg.result.reason}`
-            : cancelMsg.text}
-        </div>
-      )}
+      {cancelMsg && <Result msg={cancelMsg} />}
     </section>
   );
 }
